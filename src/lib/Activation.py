@@ -22,7 +22,7 @@ class UnitActivation(Activation):
         return inputs
 
     def deriv(self, inputs):
-        return np.zeros(inputs.shape)
+        return np.ones(inputs.shape)
 
 
 class Sigmoid(Activation):
@@ -65,7 +65,7 @@ class HyperbolicTangent(Activation):
 class RectifiedLinear(Activation):
     """ max(0, x) """
     def output(self, inputs):
-        return max(0, inputs)
+        return np.where(inputs > 0.0, inputs, 0.0)
 
     def deriv(self, inputs):
         """
@@ -73,7 +73,7 @@ class RectifiedLinear(Activation):
         :param inputs: This is weights * inputs + bias from a neuron that is sent to activation function
         :return: derivative
         """
-        return np.where(inputs <= 0, 0.0, 1.0)
+        return np.where(inputs > 0.0, 1.0, 0.0)
 
 
 class Exponential(Activation):

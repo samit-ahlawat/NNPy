@@ -18,7 +18,7 @@ class SimpleGradDescent(OptimizationAlgo):
         self.alpha = learning_rate
         self.momentum = momentum
         self.nesterov = nesterov
-        self.velocity = 0
+        self.velocity = 0.0
         self.velocityList = None
 
     def getCorrections(self, gradient):
@@ -34,7 +34,7 @@ class RMSProp(OptimizationAlgo):
         self.alpha = learning_rate
         self.rho = rho
         self.epsilon = epsilon
-        self.variance = 0
+        self.variance = 0.0
 
     def getCorrections(self, gradient):
         self.variance = self.rho * self.variance + (1 - self.rho) * np.multiply(gradient, gradient)
@@ -44,13 +44,13 @@ class RMSProp(OptimizationAlgo):
 
 class ADAM(OptimizationAlgo):
     """ Adaptive Moment Estimation. Uses a moving average for gradient and gradient^2 """
-    def __init__(self, learning_rate=0.01, beta1=0.9, beta2=0.999, epsilon=1E-6):
+    def __init__(self, learning_rate=0.001, beta1=0.9, beta2=0.999, epsilon=1E-6):
         self.alpha = learning_rate
         self.beta1 = beta1
         self.beta2 = beta2
         self.epsilon = epsilon
-        self.moment = 0
-        self.variance = 0
+        self.moment = 0.0
+        self.variance = 0.0
         self.beta1t = beta1
         self.beta2t = beta2
 

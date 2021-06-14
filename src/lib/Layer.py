@@ -2,7 +2,8 @@ from __future__ import absolute_import, division, print_function
 import numpy as np
 from abc import ABCMeta, abstractmethod
 from enum import IntEnum, unique
-from src.lib.Activation import UnitActivation, Activation
+from src.lib.Activation import UnitActivation, Activation, Sigmoid, HyperbolicTangent
+import functools
 
 
 class Layer(object):
@@ -45,11 +46,10 @@ class Layer(object):
         raise NotImplementedError('Needs implementation in %s' % self.__class__.__name__)
 
 
-
 class DenseLayer(Layer):
     """ Dense layer with each neuron connected to each neuron or input from the previous layer """
 
-    def __init__(self, num_inputs, num_neurons, network_output_neurons, activation=UnitActivation(), init_wt=1E-3):
+    def __init__(self, num_inputs, num_neurons, network_output_neurons, activation=UnitActivation(), init_wt=1E-2):
         """
         Initialize the dense layer. Last weight is for bias
         @param num_inputs: Number of inputs to this layer
@@ -65,7 +65,6 @@ class DenseLayer(Layer):
         # including bias weight. Last weight is for bias
         self.weights = np.random.random((self.nOutput, self.nInput + 1)) * init_wt
         self.networkOutputNrs = network_output_neurons
-
 
     def applyWeightsToInput(self, inputs, bias=None):
         """
@@ -107,25 +106,25 @@ class DenseLayer(Layer):
         @param delta_arr_layer: 3 dimensional ndarray containing dy_{network_output_neuron}/dy_j.
         dimensions: (#batches, #network output neurons, #neurons in this layer)
         This must be provided
-        @param deriv_loss_wrt_outputs: dLoss/dy_{network_output_neurons} : 1 dimensional ndarray: # output_neurons_in_network
-        @param bias: optional. 0 if not specified. Else, 2 dimensinal array of shape (#batches, #neurons)
+        @param deriv_loss_wrt_outputs: dLoss/dy_{network_output_neurons} : 2 dimensional ndarray of shape (# batches, # output_neurons_in_network)
+        @param bias: optional. 0 if not specified. Else, 2 dimensional array of shape (#batches, #neurons)
         @return: ndarray with dLoss/dweight_{i,j}: 2 dimensional ndarray: #outputs X #inputs, i.e. gradient for each weight and
         delta_arr_lastlayer: This is calculated by backpropagation. It contains dy_{output_neuron}/dy_k for y_k outputs from
         previous layer that are inputs to this layer. Dimensions: (#batches, #output_neurons, input dimension from last layer)
         """
-        delta_arr_lastlayer = np.einsum("ijk,ik,kl->ijl", delta_arr_layer, layer_deriv, self.weights)
+        delta_arr_lastlayer = np.einsum("ijk,ik,kl->ijl", delta_arr_layer, layer_deriv, self.weights[:, 0:-1])
         # calculate weight gradients
         weight_gradients = np.ndarray(self.weights.shape, dtype=np.float)
-        weight_gradients[:,0:-1] = np.einsum("j,ijk,ik,il->kl", deriv_loss_wrt_outputs,
-                                             delta_arr_layer,
-                                             layer_deriv,
-                                             inputs)
+        weight_gradients[:, 0:-1] = np.einsum("ij,ijk,ik,il->kl", deriv_loss_wrt_outputs,
+                                              delta_arr_layer,
+                                              layer_deriv,
+                                              inputs)
         weight_gradients[:, -1] = 0.0
         if bias:
-            weight_gradients[:, -1] = np.einsum("j,ijk,ik,ik->k", deriv_loss_wrt_outputs,
-                                                    delta_arr_layer,
-                                                    layer_deriv,
-                                                    bias)
+            weight_gradients[:, -1] = np.einsum("ij,ijk,ik,ik->k", deriv_loss_wrt_outputs,
+                                                delta_arr_layer,
+                                                layer_deriv,
+                                                bias)
         return weight_gradients, delta_arr_lastlayer
 
     def outputShape(self, input_shape=None):
@@ -179,8 +178,6 @@ class SparseLayer(DenseLayer):
             self.indicator[i, self.connections[i]] = True
         self.weights[:, 0:-1] = np.multiply(self.weights[:, 0:-1], self.indicator)
 
-
-
     def backPropagation(self, inputs, layer_deriv, delta_arr_layer, deriv_loss_wrt_outputs, bias=None):
         """
         Back propagation algorithm for the layer
@@ -189,26 +186,26 @@ class SparseLayer(DenseLayer):
         @param delta_arr_layer: 3 dimensional ndarray containing dy_{network_output_neuron}/dy_j.
         dimensions: (#batches, #network output neurons, #neurons in this layer)
         This must be provided
-        @param deriv_loss_wrt_outputs: dLoss/dy_{network_output_neurons} : 1 dimensional ndarray: # output_neurons_in_network
+        @param deriv_loss_wrt_outputs: dLoss/dy_{network_output_neurons} : 2 dimensional ndarray of shape (#batches,  #output_neurons_in_network)
         @param bias: optional. 0 if not specified. Else, 2 dimensinal array of shape (#batches, #neurons)
         @return: ndarray with dLoss/dweight_{i,j}: 2 dimensional ndarray: #outputs X #inputs, i.e. gradient for each weight and
         delta_arr_lastlayer: This is calculated by backpropagation. It contains dy_{output_neuron}/dy_k for y_k outputs from
         previous layer that are inputs to this layer. Dimensions: (#batches, #output_neurons, input dimension from last layer)
         """
-        delta_arr_lastlayer = np.einsum("ijk,ik,kl->ijl", delta_arr_layer, layer_deriv, self.weights)
+        delta_arr_lastlayer = np.einsum("ijk,ik,kl->ijl", delta_arr_layer, layer_deriv, self.weights[:, 0:-1])
         # calculate weight gradients
         weight_gradients = np.ndarray(self.weights.shape, dtype=np.float)
-        weight_gradients[:,0:-1] = np.einsum("j,ijk,ik,il,kl->kl", deriv_loss_wrt_outputs,
+        weight_gradients[:,0:-1] = np.einsum("ij,ijk,ik,il,kl->kl", deriv_loss_wrt_outputs,
                                              delta_arr_layer,
                                              layer_deriv,
                                              inputs,
                                              self.indicator)
         weight_gradients[:, -1] = 0.0
         if bias:
-            weight_gradients[:, -1] = np.einsum("j,ijk,ik,ik->k", deriv_loss_wrt_outputs,
-                                                  delta_arr_layer,
-                                                  layer_deriv,
-                                                  bias)
+            weight_gradients[:, -1] = np.einsum("ij,ijk,ik,ik->k", deriv_loss_wrt_outputs,
+                                                delta_arr_layer,
+                                                layer_deriv,
+                                                bias)
         return weight_gradients, delta_arr_lastlayer
 
     def setWeights(self, weights):
@@ -220,13 +217,17 @@ class SparseLayer(DenseLayer):
         self.weights[:, -1] = weights[:, -1]
 
 
-class PoolingLayer(Layer):
-    """ 2D Pooling layer for pooling the output of a convolution layer. Layer has no trainable weights """
+@unique
+class PoolingType(IntEnum):
+    MAX = 0,
+    AVG = 1
 
-    @unique
-    class PoolingType(IntEnum):
-        MAX = 0,
-        AVG = 1
+
+class PoolingLayer3D(Layer):
+    """
+    3D Pooling layer for pooling the output of a convolution layer. Layer has no trainable weights.
+    Can be used as a 2D pooling layer by providing pooling depth as 1
+    """
 
     POOL_FUNC = [np.max, np.mean]
 
@@ -235,14 +236,13 @@ class PoolingLayer(Layer):
     def __init__(self, pooling_shape, pooling_type=PoolingType.MAX):
         """
         Initialize the pooling layer
-        :@param pooling_shape: (pooled_len, pooled_width) tuple
+        :@param pooling_shape: (pooled_len, pooled_width, pooling_depth) tuple
         :@param pooling_type: PoolingType
         """
         assert isinstance(pooling_type, PoolingType)
-        assert len(pooling_shape) == 2
+        assert len(pooling_shape) == 3
         self.poolingShape = pooling_shape
         self.poolingType = pooling_type
-
 
     def maxDeriv(self, inputs):
         """
@@ -250,55 +250,47 @@ class PoolingLayer(Layer):
         :@param inputs: ndarray of (#batches, len, width, #channels) shape
         :@return: derivative of shape (#batches, len, width, #channels)
         """
-        result_shape = (inputs.shape[0], inputs.shape[1] / self.poolingShape[0], inputs.shape[2] / self.poolingShape[1],
-                        self.nChannels)
-        result = np.zeros(result_shape, dtype=bool)
-        for i in range(result_shape[1]):
-            for j in range(result_shape[2]):
-                begin_x = i*self.poolingShape[0]
-                begin_y = j*self.poolingShape[1]
-                max_val = np.max(inputs[:, begin_x:begin_x+self.poolingShape[0],begin_y:begin_y+self.poolingShape[1],:], axis=(1,2))
-                max_val = max_val[:, np.newaxis, np.newaxis, :]
-                result[:, i, j,:] = np.where(inputs[:, begin_x:begin_x+self.poolingShape[0],begin_y:begin_y+self.poolingShape[1],:] == max_val,
-                                             True,
-                                             False)
-        return result
+        output_shape = (inputs.shape[0],
+                        inputs.shape[1] // self.poolingShape[0],
+                        inputs.shape[2] // self.poolingShape[1],
+                        inputs.shape[3] // self.poolingShape[2])
+        pool_shape = self.poolingShape
+        rows_list = [range(i * pool_shape[0], (i + 1) * pool_shape[0]) for i in range(output_shape[1])]
+        cols_list = [range(i * pool_shape[1], (i + 1) * pool_shape[1]) for i in range(output_shape[2])]
+        dep_list = [range(i * pool_shape[2], (i + 1) * pool_shape[2]) for i in range(output_shape[3])]
+        max_val = np.max(inputs[:, rows_list, :, :][:, :, :, cols_list, :][:, :, :, :, :, dep_list], axis=(2, 4, 6))
+        val = (inputs[:, rows_list, :, :][:, :, :, cols_list, :][:, :, :, :, :, dep_list] == max_val[:, :, np.newaxis, :, np.newaxis, :, np.newaxis])
+        val = np.where(val, 1, 0)
+        return val.reshape(inputs.shape)
 
     def meanDeriv(self, inputs):
         """
         Derivative of mean pooling layer
         :@param inputs: ndarray of (#batches, len, width, #channels) shape
-        :@return: derivative of shape (#batches, len, width, #channels)
+        :@return: derivative of shape (#batches, len/pooling_shape[0], width/pooling_shape[1], #channels/pooling_shape[2])
         """
-        result_shape = (inputs.shape[0], inputs.shape[1] / self.poolingShape[0], inputs.shape[2] / self.poolingShape[1],
-                        self.nChannels)
-        factor = 1.0/(self.poolingShape[0] * self.poolingShape[1])
-        return np.multiply(np.ones(result_shape, dtype=np.float), factor)
-
+        ar = np.ones(inputs.shape, dtype=np.float)
+        return np.divide(ar, self.poolingShape[0] * self.poolingShape[1] * self.poolingShape[2])
 
     def output(self, inputs, bias=None, **kwargs):
         """
         Activate the layer
         :@param inputs: ndarray of shape (#batches, len, width, #channels)  #samples are equal to #batches
         :@param bias: ndarray of nchannels length, containing 0 or 1; or None if no bias
-        :@return: output ndarray of shape (#batches, l/pooling_shape[0], w/pooling_shape[1], nchannels)
+        :@return: output ndarray of shape (#batches, l/pooling_shape[0], w/pooling_shape[1], nchannels/pooling_shape[2])
         """
         assert len(inputs.shape) == 4
-        dims = [inputs.shape[1], inputs.shape[2]]
+        dims = [inputs.shape[1], inputs.shape[2], inputs.shape[3]]
         assert all([i % p == 0 for i, p in zip(dims, self.poolingShape)])
 
-        output_shape = (inputs.shape[0], inputs.shape[1]/self.poolingShape[0], inputs.shape[2]/self.poolingShape[1],
-                        self.nChannels)
-
-        output = np.zeros(output_shape, dtype=np.float)
+        output_shape = (inputs.shape[0], inputs.shape[1]//self.poolingShape[0], inputs.shape[2]//self.poolingShape[1],
+                        inputs.shape[3]//self.poolingShape[2])
         pool_shape = self.poolingShape
-
-        for i in range(0, inputs.shape[1], pool_shape[0]):
-            for j in range(0, inputs.shape[2], pool_shape[1]):
-                output[:,i:i+pool_shape[0],j:j+pool_shape[1], :] = self.POOL_FUNC[self.pooling_type](output[:,i:i+pool_shape[0], j:j+pool_shape[1],:],
-                                                                       axis=(1,2))
+        rows_list = [range(i * pool_shape[0], (i+1) * pool_shape[0]) for i in range(output_shape[1])]
+        cols_list = [range(i * pool_shape[1], (i+1) * pool_shape[1]) for i in range(output_shape[2])]
+        dep_list = [range(i * pool_shape[2], (i+1) * pool_shape[2]) for i in range(output_shape[3])]
+        output = self.POOL_FUNC[self.poolingType](inputs[:, rows_list, :, :][:, :, :, cols_list, :][:, :, :, :, :, dep_list], axis=(2, 4, 6))
         return output
-
 
     def backPropagation(self, inputs, layer_deriv, delta_arr_layer, deriv_loss_wrt_outputs, bias=None):
         """
@@ -309,21 +301,15 @@ class PoolingLayer(Layer):
         @param delta_arr_layer: 5 dimensional ndarray containing dy_{network_output_neuron}/dy_j.
         dimensions: (#batches, #network output neurons, #len, #width, #channels)
         This must be provided
-        @param deriv_loss_wrt_outputs: dLoss/dy_{network_output_neurons} : 1 dimensional ndarray: # output_neurons_in_network
+        @param deriv_loss_wrt_outputs: dLoss/dy_{network_output_neurons} : 2 dimensional ndarray: (#batches, #output_neurons_in_network)
         @param bias: Pooling layer does not use bias
         @return: empty ndarray (no trainable weights) and  delta_arr_lastlayer: This is calculated by backpropagation. It contains dy_{output_neuron}/dy_k for y_k outputs from
         previous layer that are inputs to this layer. Dimensions: (#batches, #output_neurons, input dimension from last layer)
         """
         assert len(layer_deriv.shape) == 4
-        delta_arr_lastlayer = np.zeros((inputs.shape[0], delta_arr_layer.shape[1], inputs.shape[1], inputs.shape[2],
-                                        inputs.shape[3]), dtype=np.float)
-        for i in range(0, inputs.shape[1], self.poolingShape[0]):
-            for j in range(0, inputs.shape[2], self.poolingShape[2]):
-                idx1 = i/self.poolingShape[0]
-                idx2 = j/self.poolingShape[1]
-                delta_arr_lastlayer[:, i:i+self.poolingShape[0],j:j+self.poolingShape[1], :] = np.einsum("ijm,iklm->ijklm",
-                                                                                                         delta_arr_layer[:, :, idx1, idx2, :],
-                                                                                                         layer_deriv[:, i:i+self.poolingShape[0],j:j+self.poolingShape[1], :])
+        ar1 = np.repeat(delta_arr_layer, self.poolingShape[0], axis=2)
+        ar1 = np.repeat(ar1, self.poolingShape[1], axis=3)
+        delta_arr_lastlayer = np.repeat(ar1, self.poolingShape[2], axis=4)
         return np.array([]), delta_arr_lastlayer
 
     def outputShape(self, input_shape=None):
@@ -332,7 +318,9 @@ class PoolingLayer(Layer):
         @param input_shape: shape of input: tuple with 4 elements: (#batches, len, width, depth)
         @return: output shape tuple
         """
-        return input_shape[0], input_shape[1] / self.poolingShape[0], input_shape[2] / self.poolingShape[1], self.nChannels
+        if input_shape is None:
+            return None, None, None, None
+        return input_shape[0], input_shape[1] // self.poolingShape[0], input_shape[2] // self.poolingShape[1], input_shape[3] // self.poolingShape[2]
 
     def applyWeightsToInput(self, inputs, bias=None):
         return inputs
@@ -353,15 +341,99 @@ class PoolingLayer(Layer):
         pass
 
 
-class ConvolutionLayer(Layer):
-    """ Convolution layer that applies an activation function to a weighted sum of inputs, applying same weights to different
-     sections of the input, as specified by filter size, stride and padding """
+class PoolingLayer2D(PoolingLayer3D):
+    """
+    2D Pooling layer for pooling the output of a convolution layer. Layer has no trainable weights.
+    """
 
-    def __init__(self, filter_shape, input_depth, num_channels, stride=1, padding=(0,0), activation_func=UnitActivation(), init_wt=1E-3):
+    def __init__(self, pooling_shape, pooling_type=PoolingType.MAX):
+        """
+        Initialize the pooling layer
+        :@param pooling_shape: (pooled_len, pooled_width) tuple
+        :@param pooling_type: PoolingType
+        """
+        assert isinstance(pooling_type, PoolingType)
+        assert len(pooling_shape) == 2
+        super(PoolingLayer2D, self).__init__(pooling_shape + (1,), pooling_type)
+
+    def maxDeriv(self, inputs):
+        """
+        Derivative of max pooling layer
+        :@param inputs: ndarray of (#batches, len, width, #channels) shape
+        :@return: derivative of shape (#batches, len, width, #channels)
+        """
+        output_shape = (inputs.shape[0],
+                        inputs.shape[1] // self.poolingShape[0],
+                        inputs.shape[2] // self.poolingShape[1],
+                        inputs.shape[3])
+        pool_shape = self.poolingShape
+        rows_list = [range(i * pool_shape[0], (i + 1) * pool_shape[0]) for i in range(output_shape[1])]
+        cols_list = [range(i * pool_shape[1], (i + 1) * pool_shape[1]) for i in range(output_shape[2])]
+        max_val = np.max(inputs[:, rows_list, :, :][:, :, :, cols_list, :], axis=(2, 4))
+        val = (inputs[:, rows_list, :, :][:, :, :, cols_list, :] == max_val[:, :, np.newaxis, :, np.newaxis, :])
+        val = np.where(val, 1, 0)
+        return val.reshape(inputs.shape)
+
+    def meanDeriv(self, inputs):
+        """
+        Derivative of mean pooling layer
+        :@param inputs: ndarray of (#batches, len, width, #channels) shape
+        :@return: derivative of shape (#batches, len/pooling_shape[0], width/pooling_shape[1], #channels)
+        """
+        ar = np.ones(inputs.shape, dtype=np.float)
+        return np.divide(ar, self.poolingShape[0] * self.poolingShape[1])
+
+    def output(self, inputs, bias=None, **kwargs):
+        """
+        Activate the layer
+        :@param inputs: ndarray of shape (#batches, len, width, #channels)  #samples are equal to #batches
+        :@param bias: ndarray of nchannels length, containing 0 or 1; or None if no bias
+        :@return: output ndarray of shape (#batches, l/pooling_shape[0], w/pooling_shape[1], nchannels)
+        """
+        assert len(inputs.shape) == 4
+        dims = [inputs.shape[1], inputs.shape[2]]
+        assert all([i % p == 0 for i, p in zip(dims, self.poolingShape)])
+
+        output_shape = (inputs.shape[0], inputs.shape[1] // self.poolingShape[0], inputs.shape[2] // self.poolingShape[1],
+                        inputs.shape[3])
+        pool_shape = self.poolingShape
+        rows_list = [range(i * pool_shape[0], (i+1) * pool_shape[0]) for i in range(output_shape[1])]
+        cols_list = [range(i * pool_shape[1], (i+1) * pool_shape[1]) for i in range(output_shape[2])]
+        output = self.POOL_FUNC[self.poolingType](inputs[:, rows_list, :, :][:, :, :, cols_list, :], axis=(2, 4))
+        return output
+
+    def backPropagation(self, inputs, layer_deriv, delta_arr_layer, deriv_loss_wrt_outputs, bias=None):
+        """
+        Back propagation algorithm for the layer
+        @param inputs: numpy ndarray (4 dimensions): #batches X #len X #width X #depth
+        @param layer_deriv: derivative of activation function for each neuron: d(activation_func).
+        4 dimensional: #batches X #input_len X #input_width X #channels
+        @param delta_arr_layer: 5 dimensional ndarray containing dy_{network_output_neuron}/dy_j.
+        dimensions: (#batches, #network output neurons, #len, #width, #channels)
+        This must be provided
+        @param deriv_loss_wrt_outputs: dLoss/dy_{network_output_neurons} : 2 dimensional ndarray: (#batches, #output_neurons_in_network)
+        @param bias: Pooling layer does not use bias
+        @return: empty ndarray (no trainable weights) and  delta_arr_lastlayer: This is calculated by backpropagation. It contains dy_{output_neuron}/dy_k for y_k outputs from
+        previous layer that are inputs to this layer. Dimensions: (#batches, #output_neurons, input dimension from last layer)
+        """
+        assert len(layer_deriv.shape) == 4
+        ar1 = np.repeat(delta_arr_layer, self.poolingShape[0], axis=2)
+        delta_arr_lastlayer = np.repeat(ar1, self.poolingShape[1], axis=3)
+        return np.array([]), delta_arr_lastlayer
+
+
+class ConvolutionLayer(Layer):
+    """
+    Convolution layer that applies an activation function to a weighted sum of inputs, applying same weights to
+    different sections of the input, as specified by filter size, stride and padding
+    """
+
+    def __init__(self, filter_shape, input_depth, num_channels, stride=(1,1), padding=(0,0),
+                 activation_func=UnitActivation(), init_wt=1E-2):
         """
         Initialize the convolution layer
         @param filter_shape: Tuple specifying (length, width) of the filter
-        @param depth: input depth
+        @param input_depth: input depth
         @param num_channels: Number of channels
         @param stride: Stride (int, int) specifying the stride to apply along length and width
         @param padding: Tuple (int, int) specifying padding to be applied along length and width
@@ -373,10 +445,10 @@ class ConvolutionLayer(Layer):
         self.nChannels = num_channels
         self.stride = stride
         self.padding = padding
-        self.depth = depth
-        self.weights = np.random.random((self.filterShape[0], self.filterShape[1], depth, self.nChannels)) * init_wt
+        self.depth = input_depth
+        self.weights = np.random.random((self.filterShape[0], self.filterShape[1], input_depth, self.nChannels)) * init_wt
         self.biasWeights = np.random.random(self.nChannels) * init_wt
-
+        self.activationFunc = activation_func
 
     def paddedInput(self, inputs):
         """
@@ -393,8 +465,7 @@ class ConvolutionLayer(Layer):
             inputs = xinp
         return inputs
 
-
-    def applyWeightsToInput(self, inputs, bias=None):
+    def applyWeightsToInput(self, padded_inputs, bias=None):
         """
         Apply weights to the layer to get an output before applying activation function
         :param padded_inputs: ndarray of shape (#batches, len, width, height)
@@ -405,31 +476,22 @@ class ConvolutionLayer(Layer):
         w = (padded_inputs.shape[2] - self.filterShape[1])/self.stride[1] + 1
         """
         assert len(padded_inputs.shape) == 4
-        assert (padded_inputs.shape[1] - self.filterShape[0])%self.stride[0] == 0
-        assert (padded_inputs.shape[2] - self.filterShape[1])%self.stride[1] == 0
+        assert (padded_inputs.shape[1] - self.filterShape[0]) % self.stride[0] == 0
+        assert (padded_inputs.shape[2] - self.filterShape[1]) % self.stride[1] == 0
         output_shape = (padded_inputs.shape[0],
-                        (padded_inputs.shape[1] - self.filterShape[0])/self.stride[0] + 1,
-                        (padded_inputs.shape[2] - self.filterShape[1])/self.stride[1] + 1,
+                        (padded_inputs.shape[1] - self.filterShape[0]) // self.stride[0] + 1,
+                        (padded_inputs.shape[2] - self.filterShape[1]) // self.stride[1] + 1,
                         self.nChannels)
         if bias is not None:
-            assert bias.shape == (inputs.shape[0], self.nChannels)
+            assert bias.shape == (padded_inputs.shape[0], self.nChannels)
 
-        output = np.zeros(output_shape, dtype=np.float)
-        extents = np.zeros(4, dtype=np.float)
-        for i in range(output_shape[1]):
-            extents[0] = i * self.stride[0]
-            extents[1] = extents[0] + self.filterShape[0]
-            for j in range(output_shape[2]):
-                extents[2] = j * self.stride[1]
-                extents[3] = extents[2] + self.filterShape[1]
-                output[:, i, j, :] = np.einsum("ijkl,jklm->im",
-                                               padded_inputs[:, extents[0]:extents[1], extents[2]:extents[3], :],
-                                               self.weights)
-                if bias:
-                    output[:, i, j, :] += np.einsum("ij,j->ij", bias, self.biasWeights)
+        rows_list = [range(i * self.stride[0], i * self.stride[0] + self.filterShape[0]) for i in range(output_shape[1])]
+        cols_list = [range(j * self.stride[1], j * self.stride[1] + self.filterShape[1]) for j in range(output_shape[2])]
+        output = np.einsum("ijklmn,kmno->ijlo", padded_inputs[:, rows_list, :, :][:, :, :, cols_list, :], self.weights)
+        if bias:
+            output += np.einsum("ij,j->ij", bias, self.biasWeights)[:, np.newaxis, np.newaxis, :]
 
         return output
-
 
     def output(self, padded_inputs, bias=None, **kwargs):
         """
@@ -444,58 +506,58 @@ class ConvolutionLayer(Layer):
         output = self.applyWeightsToInput(padded_inputs, bias)
         return self.activationFunc.output(output)
 
-
     def deriv(self, padded_inputs, bias=None):
         """ Calculate dyi/dai """
         assert len(padded_inputs.shape) == 4
         weighted_input = self.applyWeightsToInput(padded_inputs, bias)
         return self.activationFunc.deriv(weighted_input)
 
-
     def backPropagation(self, padded_inputs, layer_deriv, delta_arr_layer, deriv_loss_wrt_outputs, bias=None):
         """
         Back propagation algorithm for the layer
-        @param padded_inputs: numpy ndarray (2 dimensions): #batches X #inputs
-        @param layer_deriv: derivative of activation function for each neuron
+        @param padded_inputs: numpy ndarray (4 dimensions): #batches X len X width X depth
+        @param layer_deriv: derivative of activation function for each neuron.
+                            4 dimensional ndarray of shape (#batches, output len, output width, #channnels)
         @param delta_arr_layer: 5 dimensional ndarray containing dy_{output_neuron}/dy_j for neurons from this layer
         Dimensions: (#batches, #network output neurons, layer_output_len, layer_output_width, channels)
-        @param deriv_loss_wrt_outputs: dLoss/dy_{output_neurons} : 1 dimensional ndarray: # output_neurons_in_network
+        @param deriv_loss_wrt_outputs: dLoss/dy_{output_neurons} : 2 dimensional ndarray: (#batches, #output_neurons_in_network)
         @param bias: optional. 0 if not specified. Else, 2 dimensional array of shape (#batches, #channels)
         @return: ndarray with dLoss/dweight_{i,j} and delta_arr_lastlayer
         """
-        output_len = (padded_inputs.shape[1] - self.filterShape[0]) / self.stride[0] + 1
-        output_width = (padded_inputs.shape[2] - self.filterShape[1]) / self.stride[1] + 1
+        output_len = (padded_inputs.shape[1] - self.filterShape[0]) // self.stride[0] + 1
+        output_width = (padded_inputs.shape[2] - self.filterShape[1]) // self.stride[1] + 1
         input_len = padded_inputs.shape[1] - 2*self.padding[0]
         input_width = padded_inputs.shape[2] - 2*self.padding[1]
         input_depth = padded_inputs.shape[3]
-        delta_arr_lastlayer = np.zeros((delta_arr.shape[0], input_len, input_width, input_depth), dtype=np.float)
-        extents = np.zeros(4, dtype=np.float)
-        weight_gradients = np.zeros(self.weights.shape, dtype=np.float)
+        delta_arr_lastlayer = np.zeros((delta_arr_layer.shape[0], delta_arr_layer.shape[1], input_len, input_width, input_depth), dtype=np.float)
         bias_weight_gradients = np.zeros(self.biasWeights.shape, dtype=np.float)
+
+        extents = np.zeros(4, dtype=np.int)
+        weight_gradients = np.zeros(self.weights.shape, dtype=np.float)
         for i in range(output_len):
             extents[0] = i * self.stride[0]
             extents[1] = extents[0] + self.filterShape[0]
             for j in range(output_width):
                 extents[2] = j * self.stride[1]
                 extents[3] = extents[2] + self.filterShape[1]
-                delta_arr_lastlayer[:, :, extents[0]:extents[1], extents[2]:extents[3], :] = np.einsum("ijm,im,kl->ijklm",
-                                                                                                    delta_arr_layer[:, :, i, j, :],
-                                                                                                    layer_deriv[:, i, j, :],
-                                                                                                    self.weights)
+                delta_arr_lastlayer[:, :, extents[0]:extents[1], extents[2]:extents[3], :] += np.einsum("ijn,in,klmn->ijklm",
+                                                                                                        delta_arr_layer[:, :, i, j, :],
+                                                                                                        layer_deriv[:, i, j, :],
+                                                                                                        self.weights)
                 # calculate weight gradients
-                weight_gradients += np.einsum("j,ijklm,iklm,inop->nop",
+                weight_gradients += np.einsum("ij,ijn,in,iklm->klmn",
                                               deriv_loss_wrt_outputs,
-                                              delta_arr[:, :, :, :, :],
-                                              layer_deriv,
+                                              delta_arr_layer[:, :, i, j, :],
+                                              layer_deriv[:, i, j, :],
                                               padded_inputs[:, extents[0]:extents[1], extents[2]:extents[3], :])
-                if bias:
-                    bias_weight_gradients += np.einsum("j,ijklm,iklm,ip->p",
-                                                       deriv_loss_wrt_outputs,
-                                                       delta_arr[:, :, :, :, :],
-                                                       layer_deriv,
-                                                       bias)
-        return (weight_gradients, bias_weight_gradients), delta_arr_lastlayer
 
+        if bias:
+            bias_weight_gradients = np.einsum("ij,ijkln,ikln,in->n",
+                                              deriv_loss_wrt_outputs,
+                                              delta_arr_layer,
+                                              layer_deriv,
+                                              bias)
+        return (weight_gradients, bias_weight_gradients), delta_arr_lastlayer
 
     def inputShape(self):
         """
@@ -557,7 +619,8 @@ class FlattenLayer(Layer):
         return np.ones((inputs.shape[0], flat_dim), dtype=np.bool)
 
     def backPropagation(self, inputs, layer_deriv, delta_arr_layer, deriv_loss_wrt_outputs, bias=None):
-        delta_arr_lastlayer = delta_arr_layer.reshape(inputs.shape)
+        new_shape = (delta_arr_layer.shape[0], delta_arr_layer.shape[1]) + inputs.shape[1:]
+        delta_arr_lastlayer = delta_arr_layer.reshape(new_shape)
         return np.array([]), delta_arr_lastlayer
 
     def inputShape(self):
@@ -611,10 +674,11 @@ class SoftmaxLayer(Layer):
         @param activ_val: optional. output of this layer
         @return: derivative dy_i/dx_j
         """
+
         if activ_val is None:
             activ_val = self.output(inputs, bias)
         identity_matrix = np.eye(inputs.shape[1], dtype=np.float)
-        diag = np.multiply(activ_val[:,:,np.newaxis], identity_matrix[np.newaxis, :, :])
+        diag = np.multiply(activ_val[:, :, np.newaxis], identity_matrix[np.newaxis, :, :])
         yiyj = np.einsum("ij,ik->ijk", activ_val, activ_val)
         return np.subtract(diag, yiyj)
 
@@ -624,11 +688,11 @@ class SoftmaxLayer(Layer):
         @param inputs: ndarray of shape (#batches, #buckets)
         @param layer_deriv: ndarray of shape (#batches, #buckets, #buckets)
         @param delta_arr_layer: ndarray of shape (#batches, #buckets)
-        @param deriv_loss_wrt_outputs: 1d ndarray of shape (#network output neurons)
+        @param deriv_loss_wrt_outputs: 2d ndarray of shape (#batches, #network output neurons)
         @param bias: None. Softmax layer has no bias
         @return: Tuple: (empty array, dy_output/dy_previous_layer)
         """
-        delta_arr_lastlayer = np.einsum("ij,ijk->ik", delta_arr_layer, layer_deriv)
+        delta_arr_lastlayer = np.einsum("ijk,ikl->ijl", delta_arr_layer[:, 0:-1, :], layer_deriv)
         return np.array([]), delta_arr_lastlayer
 
     def inputShape(self):
@@ -656,25 +720,22 @@ class DropoutLayer(Layer):
         self.TRAINING = True
 
     def output(self, inputs, bias=None, **kwargs):
-        mult_factor = self.applyWeightsToInput(inputs, bias)
-        return np.multiply(inputs, mult_factor)
+        if self.TRAINING:
+            mult_factor = self.applyWeightsToInput(inputs, bias)
+            return np.multiply(inputs, mult_factor)
+        return inputs
 
     def deriv(self, inputs, bias=None):
         return self.applyWeightsToInput(inputs, bias)
 
     def applyWeightsToInput(self, inputs, bias=None):
-        if self.TRAINING:
-            len_inputs = functools.reduce(lambda x,y=1: x*y, inputs.shape[1:])
-            set_to_zero = int(self.f * len_inputs)
-            zero_elems = np.random.choice(len_inputs, set_to_zero)
-            filter = np.ones(len_inputs, dtype=np.float)
-            filter[zero_elems] = 0.0
-            new_shape = (np.newaxis, ) + inputs.shape[1:]
-            filter = filter.reshape(new_shape)
-            mult_factor = len_inputs/float(len_inputs - set_to_zero)
-            return np.multiply(filter, mult_factor)
-        return 1
-
+        len_inputs = functools.reduce(lambda x, y=1: x * y, inputs.shape[1:])
+        set_to_zero = int(self.f * len_inputs)
+        zero_elems = np.random.choice(len_inputs, set_to_zero)
+        filter = np.ones(inputs.shape[1:], dtype=np.float)
+        filter.reshape(-1)[zero_elems] = 0.0
+        mult_factor = len_inputs/float(len_inputs - set_to_zero)
+        return np.multiply(filter[np.newaxis, :], mult_factor)
 
     def backPropagation(self, inputs, layer_deriv, delta_arr_layer, deriv_loss_wrt_outputs, bias=None):
         factor = self.applyWeightsToInput(inputs)
@@ -700,7 +761,7 @@ class DropoutLayer(Layer):
 class EmbeddingLayer(Layer):
     """ Embedding layer that maps an input into dense embedding """
 
-    def __init__(self, vocab_size, embedding_dim, one_hot_input=False):
+    def __init__(self, vocab_size, embedding_size, one_hot_input=False):
         """
         Initialize the layer
         @param vocab_size: Size of vocabulary.
@@ -730,7 +791,6 @@ class EmbeddingLayer(Layer):
 
         return np.einsum("ijk,kl->ijl", one_hot_inputs, self.weights)
 
-
     def deriv(self, inputs, bias=None):
         return np.ones((inputs.shape[0], inputs.shape[1], self.embeddingSize), dtype=np.bool)
 
@@ -741,7 +801,7 @@ class EmbeddingLayer(Layer):
         # layer deriv contains all 1
         delta_arr_lastlayer = np.einsum("ijk,lk->ijl", delta_arr_layer, self.weights)
         # calculate weight gradients
-        weight_gradients = np.einsum("j,ijk,ilm->km", deriv_loss_wrt_outputs, delta_arr_layer, inputs)
+        weight_gradients = np.einsum("ij,ijk,ilm->km", deriv_loss_wrt_outputs, delta_arr_layer, inputs)
         return weight_gradients, delta_arr_lastlayer
 
     def inputShape(self):
@@ -775,7 +835,7 @@ class GRULayer(Layer):
 
     def __init__(self, num_units, num_features, update_gate_activation=Sigmoid(),
                  reset_gate_activation=Sigmoid(), output_activation=HyperbolicTangent(),
-                 init_wt=1E-3, init_state=0):
+                 init_wt=1E-2, init_state=0):
         """
         Initialize the GRU layer
         @param num_units: Number of GRU units
@@ -832,6 +892,7 @@ class GRULayer(Layer):
         state[:, :] = self.initState
         return_seq = kwargs.get("return_seq", False)
         put_initial_state = kwargs.get("put_initial_state", False)
+        all_outputs, ug_outputs, rg_outputs, og_outputs, begin = None, None, None, None, None
         if return_seq:
             if put_initial_state:
                 all_outputs = np.zeros((inputs.shape[0], inputs.shape[1] + 1, self.nUnits), dtype=np.float)
@@ -865,7 +926,7 @@ class GRULayer(Layer):
                 ug_outputs[:, i, :] = zt
                 rg_outputs[:, i, :] = rt
                 og_outputs[:, i, :] = hpredt
-        if derivs_required:
+            if derivs_required:
                 update_gate_derivs[:, i, :] = self.updateGateActiv.deriv(upd_input)
                 reset_gate_derivs[:, i, :] = self.resetGateActiv.deriv(reset_input)
                 output_gate_derivs[:, i, :] = self.outputGateActiv.deriv(output_inp)
@@ -874,10 +935,8 @@ class GRULayer(Layer):
             return (all_outputs, ug_outputs, rg_outputs, og_outputs), (update_gate_derivs, reset_gate_derivs, output_gate_derivs)
         return (state, zt, rt, hpredt), (update_gate_derivs, reset_gate_derivs, output_gate_derivs)
 
-
     def deriv(self, inputs, bias=None):
         return self.output(inputs, bias, derivs=True)[1]
-
 
     def applyWeightsToInput(self, inputs, bias=None):
         pass
@@ -889,7 +948,7 @@ class GRULayer(Layer):
         @param layer_deriv: Not used
         @param delta_arr_layer: dy_network_output_neuron/dy_layer
         This is a 3d ndarray of shape (#batches, #network output neurons, #units)
-        @param deriv_loss_wrt_outputs: dLoss/dy_layer. 1d ndarray of shape (#units)
+        @param deriv_loss_wrt_outputs: dLoss/dy_layer. 2d ndarray of shape (#batches, #units)
         @param bias: None for no bias. Else a 4 dimensional ndarray of shape (#batches, #timesteps, #units, gate number)
         gate number = 0 for update gate
         gate number = 1 for reset gate
@@ -908,7 +967,7 @@ class GRULayer(Layer):
         delta_curr_layer = delta_arr_layer
         for i in range(inputs.shape[1] - 1, -1, -1):
             # calculate update gate weight gradients
-            common = np.einsum("j,ijk->ik", deriv_loss_wrt_outputs, delta_curr_layer)
+            common = np.einsum("ij,ijk->ik", deriv_loss_wrt_outputs, delta_curr_layer)
             diff_matrix = np.subtract(og_output[:, i, :], output[:, i, :]) # output corresponds to previous time step because put_initial_state=True
             matrix = np.einsum("ik,ik,ik->ik", common,
                                ug_derivs[:, i, :],
@@ -994,7 +1053,7 @@ class LSTMLayer(Layer):
     def __init__(self, num_units, num_features, forget_gate_activation=Sigmoid(),
                  input_gate_activation=Sigmoid(), output_gate_activation=Sigmoid(),
                  cell_state_activation=HyperbolicTangent(), hidden_state_activation=HyperbolicTangent(),
-                 init_wt=1E-3, init_cell_state=0, init_hidden_state=0):
+                 init_wt=1E-2, init_cell_state=0, init_hidden_state=0):
         """
         Initialize the LSTM layer
         @param num_units:
@@ -1061,6 +1120,7 @@ class LSTMLayer(Layer):
         hidden_state = np.ndarray((inputs.shape[0], self.nUnits), dtype=np.float)
         hidden_state[:, :] = self.initHiddenState
         ft, it, ot, cpred, cfinal, activt = None, None, None, None, None, None
+        all_outputs, fg_outputs, ig_outputs, og_outputs, cpred_outputs, activt_outputs, begin = None, None, None, None, None, None, None
         return_seq = kwargs.get("return_seq", False)
         put_initial_state = kwargs.get("put_initial_state", False)
         if return_seq:
@@ -1121,7 +1181,6 @@ class LSTMLayer(Layer):
             return (all_outputs, fg_outputs, ig_outputs, og_outputs, cpred_outputs, cfinal, activt_outputs), (forget_gate_derivs, input_gate_derivs, output_gate_derivs, cell_gate_derivs, ht_derivs)
         return (hidden_state, ft, it, ot, cpred, cell_state, activt), (forget_gate_derivs, input_gate_derivs, output_gate_derivs, cell_gate_derivs, ht_derivs)
 
-
     def deriv(self, inputs, bias=None):
         return self.output(inputs, bias, derivs=True)[1]
 
@@ -1134,7 +1193,7 @@ class LSTMLayer(Layer):
         @param inputs: 3 dimensional ndarray of shape (#batches, #timesteps, #units)
         @param layer_deriv: (not used in BPTT)
         @param delta_arr_layer: (will change its contents) dy_network_output/dy_layer 3 d ndarray of shape (#batches, #network outputs, #units)
-        @param deriv_loss_wrt_outputs: dLoss/dy_layer : 1 dimensional ndarray of shape (#units)
+        @param deriv_loss_wrt_outputs: dLoss/dy_layer : 2 dimensional ndarray of shape (#batches, #units)
         @param bias: (optional) 0 if None. Else, 4 dimensional ndarray of shape (#batches, #timesteps, #units, gate_number)
         @return: tuple with 2 elements: derivative of weights and derivative of network output with respect to cell input
         """
@@ -1148,7 +1207,7 @@ class LSTMLayer(Layer):
         delta_curr_layer = delta_arr_layer
         for i in range(inputs.shape[1]-1, -1, -1):
             # calculate forget gate weight gradients
-            common = np.einsum("j,ijk->ik", deriv_loss_wrt_outputs, delta_curr_layer)
+            common = np.einsum("ij,ijk->ik", deriv_loss_wrt_outputs, delta_curr_layer)
             matrix = np.einsum("ik,ik,ik,ik,ik->ik", common,
                                og_output[:, i, :],
                                ht_derivs[:, i, :],
@@ -1237,7 +1296,7 @@ class SimpleRNNLayer(Layer):
     output gate: o_t = sigmoid(Wo * X_t + Uo * o_t-1 + bo)
     """
 
-    def __init__(self, num_units, num_features, output_gate_activation=Sigmoid(), init_wt=1E-3, init_state=0):
+    def __init__(self, num_units, num_features, output_gate_activation=Sigmoid(), init_wt=1E-2, init_state=0):
         """
         Initialize a simple RNN layer
         @param num_units:
@@ -1275,7 +1334,7 @@ class SimpleRNNLayer(Layer):
 
         cell_state = np.ndarray((inputs.shape[0], self.nUnits), dtype=np.float)
         cell_state[:, :] = self.initState
-
+        all_outputs, begin = None, None
         return_seq = kwargs.get("return_seq", False)
         put_initial_state = kwargs.get("put_initial_state", False)
         if return_seq:
@@ -1303,7 +1362,6 @@ class SimpleRNNLayer(Layer):
             return all_outputs, output_gate_derivs
         return cell_state, output_gate_derivs
 
-
     def deriv(self, inputs, bias=None):
         """
         Derivative of cell gates
@@ -1312,7 +1370,6 @@ class SimpleRNNLayer(Layer):
         @return: derivative of output date
         """
         return self.output(inputs, bias, derivs=True)[1:]
-
 
     def applyWeightsToInput(self, inputs, bias=None):
         pass
@@ -1323,7 +1380,7 @@ class SimpleRNNLayer(Layer):
         @param inputs: 3d ndarray of shape (#batches, #timesteps, #features)
         @param layer_deriv: (not used), will calculate gate derivatives
         @param delta_arr_layer: (will change its contents): dy_output_neuron/dy_layer_neuron.
-        @param deriv_loss_wrt_outputs: dLoss/dy_output_neuron
+        @param deriv_loss_wrt_outputs: dLoss/dy_output_neuron : 2D ndarray of shape (#batches, #output neurons)
         @param bias: None (for 0 bias) or a 3 d ndarray of shape (#batches, #timesteps, #units) to apply to each neuron
         @return: weight gradients and delta_arr_layer containing derivatives output network output w.r.t last layer's outputs
         """
@@ -1332,7 +1389,7 @@ class SimpleRNNLayer(Layer):
         delta_curr_layer = delta_arr_layer
         for i in range(inputs.shape[1]-1, -1, -1):
             # calculate weight gradients
-            matrix = np.einsum("j,ijk,ik->ik", deriv_loss_wrt_outputs,
+            matrix = np.einsum("ij,ijk,ik->ik", deriv_loss_wrt_outputs,
                                delta_curr_layer,
                                derivs[:, i, :],
                                inputs[:, i, :])
@@ -1343,10 +1400,9 @@ class SimpleRNNLayer(Layer):
                 weight_gradients[-1, :] += np.einsum("ik,ik->k", matrix, bias[:, i, :])
 
             # calculate derivatives dy_l/dy_j for last layer, y_l : output, y_j: last layer's output
-            delta_curr_layer[:, :, :] = np.einsum("ijk,ik,k->ijk", delta_curr_layer, derivs[:, i, :], self.weights[-1, :])
+            delta_curr_layer[:, :, :] = np.einsum("ijk,ik,k->ijk", delta_curr_layer, derivs[:, i, :], self.outputGateWeights[-1, :])
 
         return np.divide(weight_gradients, inputs.shape[1]), delta_curr_layer
-
 
     def inputShape(self):
         return None, None, self.nFeatures

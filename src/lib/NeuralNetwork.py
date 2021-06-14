@@ -1,14 +1,14 @@
 from __future__ import absolute_import, division, print_function
 import numpy as np
 from abc import ABCMeta, abstractmethod
-import functools
 import logging
 import src.lib.OptimizationAlgo as OA
 import src.lib.LossFunction as LF
 import src.lib.Metrics as MT
+from src.lib.History import History
 from src.lib.Layer import Layer, DropoutLayer
 from copy import copy
-
+import functools
 
 FORMAT = '%(asctime)s %(relativeCreated)6d %(threadName)s %(name)s %(levelname)s %(message)s'
 logging.basicConfig(format=FORMAT, level=logging.DEBUG)
@@ -17,7 +17,7 @@ logging.basicConfig(format=FORMAT, level=logging.DEBUG)
 class Network(object):
     __metaclass__ = ABCMeta
 
-    def __init__(self, loss_func=LF.MeanSquaredError(),  optim_algo=OA.SimpleGradDescent(), metrics=[],
+    def __init__(self, loss_func=LF.MeanSquaredError(),  optim_algo=OA.SimpleGradDescent(), metrics=(),
                  log_level=logging.DEBUG):
         assert isinstance(loss_func, LF.LossFunction)
         self.lossFunc = loss_func
@@ -25,7 +25,7 @@ class Network(object):
         self.optimAlgo = optim_algo
         for metric in metrics:
             assert isinstance(metric, MT.Metric)
-        self.metrics = metrics
+        self.metrics = list(metrics)
         self.dropoutLayers = []
         self.logger = logging.getLogger(self.__class__.__name__)
         self.logger.setLevel(log_level)
@@ -57,7 +57,7 @@ class Network(object):
 class SequentialNeuralNetwork(Network):
     """ Sequential neural network composed of sequential layers """
 
-    def __init__(self, loss_func=LF.MeanSquaredError(),  optim_algo=OA.SimpleGradDescent(), metrics=[], layers=[],
+    def __init__(self, loss_func=LF.MeanSquaredError(),  optim_algo=OA.SimpleGradDescent(), metrics=(), layers=(),
                  log_level=logging.DEBUG):
         """
         Initialize the sequential network
@@ -71,10 +71,9 @@ class SequentialNeuralNetwork(Network):
         super(SequentialNeuralNetwork, self).__init__(loss_func, optim_algo, metrics, log_level)
         for layer in layers:
             assert isinstance(layer, Layer)
-        self.layers = layers
-        self.dropoutLayers = [lyr for lyr in self.layers if isinstance(lyr, DropoutLayer)]
-        self.oAlgos = None
-
+        self.layers = list(layers)
+        self.dropoutLayers = [lyr for lyr in layers if isinstance(lyr, DropoutLayer)]
+        self.oAlgos = [copy(optim_algo) for i in range(len(layers))]
 
     def addLayer(self, layer):
         """
@@ -85,6 +84,7 @@ class SequentialNeuralNetwork(Network):
         self.layers.append(layer)
         if isinstance(layer, DropoutLayer):
             self.dropoutLayers.append(layer)
+        self.oAlgos.append(copy(self.optimAlgo))
 
     def setWeights(self, weights):
         """
@@ -111,9 +111,9 @@ class SequentialNeuralNetwork(Network):
         """
         if not self.layers:
             return inputs
-        if not kwargs.get("training", False):
-            for dropout_lyr in self.dropoutLayers:
-                dropout_lyr.TRAINING = False
+        training = kwargs.get("training", False)
+        for dropout_lyr in self.dropoutLayers:
+            dropout_lyr.TRAINING = training
         if bias_for_layers is None:
             bias_for_layers = [None] * len(self.layers)
 
@@ -126,23 +126,22 @@ class SequentialNeuralNetwork(Network):
             return outputs
         return outputs[-1]
 
-
-    def getWeightCorrections(self, weight_gradients):
+    def getWeightCorrections(self, weight_gradients, layer_number):
         """
         Get weight corrections for weight gradients, using the optimization algorithm specified in constructor
         @param weight_gradients: Weight gradients. Can be ndarray or a tuple (or list) of ndarrays
+        @param layer_number: Index of this layer. Must be an integer between 0 and nLayers-1
         @return: weight corrections (ndarray or a list of ndarrays, according to the type of weight_gradients)
         """
-        if isinstance(weight_gradient, (tuple, list)):
+        if isinstance(weight_gradients, (tuple, list)):
             weight_corrections = [None] * len(weight_gradients)
-            if self.oAlgos is None:
-                self.oAlgos = [copy(self.optimAlgo) for i in range(len(weight_gradients))]
+            if not isinstance(self.oAlgos[layer_number], list):
+                self.oAlgos[layer_number] = [copy(self.optimAlgo) for i in range(len(weight_gradients))]
             for i, weight_grad in enumerate(weight_gradients):
-                weight_corrections[i] = self.oAlgos[i].getCorrections(weight_grad)
+                weight_corrections[i] = self.oAlgos[layer_number][i].getCorrections(weight_grad)
             return weight_corrections
 
-        return self.optimAlgo.getCorrections(weight_gradient)
-
+        return self.oAlgos[layer_number].getCorrections(weight_gradients)
 
     def fit(self, inputs, outputs, bias_for_layers=None, epochs=10, **kwargs):
         """
@@ -154,41 +153,50 @@ class SequentialNeuralNetwork(Network):
         @param kwargs:
         @return: dictionary containing the loss and metrics for each epoch
         """
-        for droupout_lyr in self.dropoutLayers:
-            droupout_lyr.TRAINING = True
+        if len(outputs.shape) == 1:
+            outputs = outputs[:, np.newaxis]
 
-        result = {"epoch":[], "loss":[]}
-        for metric in self.metrics:
-            result[metric.__class__.__name__] = []
+        loss_cols = [self.lossFunc.__class__.__name__] + [metric.__class__.__name__ for metric in self.metrics]
+        result = History(loss_cols)
 
+        if bias_for_layers is None:
+            bias_for_layers = [None] * len(self.layers)
+
+        init_arr, init_delta_arr = None, None
         for epoch in range(epochs):
             predicted_outputs = self.predict(inputs, bias_for_layers, get_all_layer_outputs=True, training=True)
             output_shape = predicted_outputs[-1].shape[1:]
-            if len(output_shape) == 1:
-                output_shape = output_shape[0]
-            delta_arr_layer = np.ones(output_shape, dtype=np.float)
+            if init_arr is None:
+                flat_shape = functools.reduce(lambda x, y=1: x*y, output_shape)
+                init_arr = np.eye(flat_shape, dtype=np.float).reshape(output_shape + output_shape)
+                init_delta_arr = np.zeros((outputs.shape[0],) + output_shape + output_shape, dtype=np.float)
+                init_delta_arr[:, ...] = init_arr
+            delta_arr_layer = init_delta_arr
             deriv_loss_wrt_outputs = self.lossFunc.deriv(outputs, predicted_outputs[-1])
-            for i in range(len(self.layers)-1, 0, -1):
+            for i in range(len(self.layers)-1, -1, -1):
                 layer = self.layers[i]
-                layer_inputs = predicted_outputs[i-1]
+                if i == 0:
+                    layer_inputs = inputs
+                else:
+                    layer_inputs = predicted_outputs[i-1]
                 layer_deriv = layer.deriv(layer_inputs, bias_for_layers[i])
                 weight_gradient, delta_arr_lastlayer = layer.backPropagation(layer_inputs,
                                                                              layer_deriv,
                                                                              delta_arr_layer,
                                                                              deriv_loss_wrt_outputs,
                                                                              bias=bias_for_layers[i])
-                weight_corrections = self.getWeightCorrections(weight_gradient)
+                weight_corrections = self.getWeightCorrections(weight_gradient, i)
                 layer.applyWeightCorrections(weight_corrections)
                 delta_arr_layer = delta_arr_lastlayer
 
             # record loss and metrics
-            result["epoch"].append(epoch)
             loss = self.lossFunc.loss(outputs, predicted_outputs[-1])
-            result["loss"].append(loss)
+            metric_vals = [loss]
             for metric in self.metrics:
                 value = metric.value(outputs, predicted_outputs[-1])
-                result[metric.__class__.__name__].append(value)
-            self.logger.info("Epoch: %d, loss: %f" % (epoch, loss))
+                metric_vals.append(value)
+            result.append(epoch+1, metric_vals)
+            self.logger.info("Epoch: %d, loss: %f, metrics: %s" % (epoch+1, loss, str(metric_vals)))
 
         return result
 
