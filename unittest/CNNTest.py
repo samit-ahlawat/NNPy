@@ -3,8 +3,6 @@ from __future__ import absolute_import, print_function
 import numpy as np
 import pandas as pd
 import unittest
-import os
-import os.path
 import logging
 import src.lib.OptimizationAlgo as OA
 import src.lib.NeuralNetwork as NN
@@ -13,6 +11,7 @@ import src.lib.Activation as AC
 import src.lib.LossFunction as LF
 import src.lib.Metrics as Metrics
 from tensorflow.keras import models, layers, losses
+import tensorflow as tf
 
 logging.basicConfig(level=logging.DEBUG)
 
@@ -29,14 +28,11 @@ class CNNModelTest(unittest.TestCase):
         self.numEpochs = 25
         self.logger = logging.getLogger(self.__class__.__name__)
         name = self.dataName()
-        data_file = os.path.join(dataDir, 'mnist', '%s_train_images.txt' % name)
-        train_data_x = np.fromfile(data_file, dtype=np.uint8, sep=",").reshape((60000, 28, 28))
-        data_file = os.path.join(dataDir, 'mnist', '%s_train_labels.txt' % name)
-        train_data_y = np.fromfile(data_file, dtype=np.uint8, sep=",")
-        data_file = os.path.join(dataDir, 'mnist', '%s_test_images.txt' % name)
-        test_data_x = np.fromfile(data_file, dtype=np.uint8, sep=",").reshape((10000, 28, 28))
-        data_file = os.path.join(dataDir, 'mnist', '%s_test_labels.txt' % name)
-        test_data_y = np.fromfile(data_file, dtype=np.uint8, sep=",")
+        if name == "digits":
+            mnist = tf.keras.datasets.mnist
+        else:
+            mnist = tf.keras.datasets.fashion_mnist
+        (train_data_x, train_data_y), (test_data_x, test_data_y) = mnist.load_data()
         data = (train_data_x, train_data_y, test_data_x, test_data_y)
         train_data_x, train_data_y, test_data_x, test_data_y = self.transformData(data)
         self.trainData = (train_data_x, train_data_y)

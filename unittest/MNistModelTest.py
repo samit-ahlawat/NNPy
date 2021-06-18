@@ -3,8 +3,6 @@ from __future__ import absolute_import, print_function
 import numpy as np
 import pandas as pd
 import unittest
-import os
-import os.path
 import logging
 import src.lib.OptimizationAlgo as OA
 import src.lib.NeuralNetwork as NN
@@ -26,14 +24,11 @@ class MNistModelTest(unittest.TestCase):
         self.numEpochs = 10
         self.logger = logging.getLogger(self.__class__.__name__)
         name = self.dataName()
-        data_file = os.path.join(dataDir, 'mnist', '%s_train_images.txt' % name)
-        train_data_x = np.fromfile(data_file, dtype=np.uint8, sep=",").reshape((60000, 28, 28))
-        data_file = os.path.join(dataDir, 'mnist', '%s_train_labels.txt' % name)
-        train_data_y = np.fromfile(data_file, dtype=np.uint8, sep=",")
-        data_file = os.path.join(dataDir, 'mnist', '%s_test_images.txt' % name)
-        test_data_x = np.fromfile(data_file, dtype=np.uint8, sep=",").reshape((10000, 28, 28))
-        data_file = os.path.join(dataDir, 'mnist', '%s_test_labels.txt' % name)
-        test_data_y = np.fromfile(data_file, dtype=np.uint8, sep=",")
+        if name == "digits":
+            mnist = tf.keras.datasets.mnist
+        else:
+            mnist = tf.keras.datasets.fashion_mnist
+        (train_data_x, train_data_y), (test_data_x, test_data_y) = mnist.load_data()
         data = (train_data_x, train_data_y, test_data_x, test_data_y)
         train_data_x, train_data_y, test_data_x, test_data_y = self.transformData(data)
         self.trainData = (train_data_x, train_data_y)
@@ -64,7 +59,7 @@ class MNistModelTest(unittest.TestCase):
         dropout_layer = Layer.DropoutLayer(dropout_fraction=0.2)
         dense_layer2 = Layer.DenseLayer(noutput, 10, 10)
         seq_network = NN.SequentialNeuralNetwork(loss_func=LF.SparseCategoricalCrossEntropy(from_logits=True),
-                                                 optim_algo=OA.SimpleGradDescent(learning_rate=0.1),
+                                                 optim_algo=OA.ADAM(learning_rate=0.1),
                                                  metrics=[Metrics.Accuracy(probability=True, sparse=True)])
         seq_network.addLayer(flatten_layer)
         seq_network.addLayer(dense_layer1)
@@ -99,7 +94,7 @@ class MNistModelTest(unittest.TestCase):
         perc_matched = float(matched_rows) / df.shape[0]
         self.logger.info('Matched rows: %d, total rows: %d, match percentage: %f', matched_rows, df.shape[0],
                          100 * perc_matched)
-        self.assertTrue(perc_matched > 0.3)
+        self.assertTrue(perc_matched > 0.25)
 
     def test_NNModel(self):
         nn = self.neuralNetSetup()
@@ -123,7 +118,7 @@ class FashionMNistModelTest(MNistModelTest):
         dense_layer1 = Layer.DenseLayer(ninput, noutput, 10, init_wt=0.5)
         dense_layer2 = Layer.DenseLayer(noutput, 10, 10)
         seq_network = NN.SequentialNeuralNetwork(loss_func=LF.SparseCategoricalCrossEntropy(from_logits=True),
-                                                 optim_algo=OA.ADAM(learning_rate=0.05),
+                                                 optim_algo=OA.ADAM(learning_rate=0.1),
                                                  metrics=[Metrics.Accuracy(probability=True, sparse=True)])
         seq_network.addLayer(flatten_layer)
         seq_network.addLayer(dense_layer1)
